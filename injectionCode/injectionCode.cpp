@@ -23,7 +23,7 @@
 #pragma comment (lib , "Pathcch.lib")
 #pragma comment (lib , "Comctl32.lib" )
 
-#define APP_VISIBLE_WINDOW_CLASS       ( L"SACRIFICE" )
+#define APP_VISIBLE_WINDOW_CLASS       ( L"JUCE_" )
 #define APP_COMMUNICATION_WINDOW_CLASS ( L"SACRIFICE_C" )
 
 static LRESULT comm_wnd_wndproc( HWND hWnd , UINT msg , WPARAM wParam , LPARAM lParam )
@@ -99,12 +99,22 @@ int main()
             std::wcout << "remotewindow " << self->remoteWindow
                        << " injectMessage " << self->injectMessage
                        << " InjectControl::WAKEUP "
-                       << " from HWND " << hWnd << std::endl;
+                       << std::endl;
+
+            if( !IsWindow( self->remoteWindow ) ){
+              std::wcout << "remoteWindow is invalid" << std::endl;
+              PostQuitMessage( 0 );
+              return 0;
+            }else{
+              PostMessage( self->remoteWindow ,
+                           WM_NULL, 0, 0 );
               
-            SendMessageW( self->remoteWindow ,
-                          self->injectMessage ,
-                          static_cast<WPARAM>(InjectControl::WAKEUP),
-                          reinterpret_cast<LPARAM>(hWnd) ) ;
+              PostMessageW( self->remoteWindow ,
+                            self->injectMessage ,
+                            static_cast<WPARAM>(InjectControl::WAKEUP),
+                            reinterpret_cast<LPARAM>(hWnd) ) ;
+              std::wcout << "SendMessageW return" << std::endl;
+            }
           }
           return 0;
         }
@@ -187,7 +197,7 @@ int main()
 
       shellExecInfo.hwnd = NULL;
       shellExecInfo.lpVerb = L"open";
-      shellExecInfo.lpFile = path->data();
+      shellExecInfo.lpFile = L"C:\\Program Files\\VOICEPEAK\\voicepeak.exe";//path->data();
       shellExecInfo.lpParameters = nullptr;
       shellExecInfo.lpDirectory = nullptr;
       shellExecInfo.nShow = SW_SHOWNORMAL;
@@ -207,6 +217,7 @@ int main()
 
           case 0:
             {
+              Sleep( 5000 );
               /*
                 フックをかけるために、
                 リモートのプロセスに属しているスレッドのトップレベルウィンドウを列挙する。
@@ -233,22 +244,28 @@ int main()
               std::set<DWORD> inject_threadid {};
             
               for( auto&& tup : enumProcArg.whset ){
+                std::wcout << "HWND: " << std::get<0>( tup ) << std::endl;
                 std::array<wchar_t, 128> className;
                 static_assert( className.size() < (std::numeric_limits<int>::max)() ,""); // 左辺は constexpr , 右辺の(..max)()は、Windows の関数型マクロ max に対応するためのハック
                 if( GetClassNameW( std::get<0>(tup) , className.data() , int(className.size()) ) ){
                   for( auto&& targetWndClassName : { APP_VISIBLE_WINDOW_CLASS,  APP_COMMUNICATION_WINDOW_CLASS  } ){
                     if( 0 == std::char_traits<wchar_t>::compare( className.data() , targetWndClassName ,std::char_traits<wchar_t>::length( targetWndClassName )) ){
+                      std::array<wchar_t, 128> windowText{};
                       std::wcout << "HWND: " << std::get<0>(tup) << ", " 
                                  << '"' << className.data() << '"' << ","
-                                 << "threadid: " << std::get<1>( tup )
-                                 << std::endl;
+                                 << "threadid: " << std::get<1>( tup );
+                      int r = GetWindowTextW( std::get<0>(tup) , windowText.data() , (int)windowText.size() );
+                      if( 0 < r ){
+                        std::wcout << std::wstring{ windowText.data(), size_t( r ) };
+                      }
+                      std::wcout << std::endl;
+
                       inject_threadid.emplace( std::get<1>( tup ) );
                     }
                   }
                 }
               }
-            
-            
+
               {
                 PathCchRemoveFileSpec( path->data() , path->size() );
                 PathCchAppend( path->data() , path->size() , L"WMPaintNotify.dll" );
@@ -265,7 +282,7 @@ int main()
                   if( hookProc ){
                     for( auto&& threadid : inject_threadid ){
                       assert( 0 != threadid);
-                      if( SetWindowsHookExW( WH_CALLWNDPROC , reinterpret_cast<HOOKPROC>(hookProc) , paintNotifyDll , threadid) ){
+                      if( SetWindowsHookExW(WH_GETMESSAGE, reinterpret_cast<HOOKPROC>(hookProc) , paintNotifyDll , threadid) ){
                         std::wcout << "SetWindowsHookExW() " << std::endl;
                       }
                     }
@@ -281,8 +298,20 @@ int main()
                 if( GetClassNameW( std::get<0>(tup) , className.data() , int(className.size()) ) ){
                   for( auto&& targetWndClassName : { APP_VISIBLE_WINDOW_CLASS,  APP_COMMUNICATION_WINDOW_CLASS  } ){
                     if( 0 == std::char_traits<wchar_t>::compare( className.data() , targetWndClassName ,std::char_traits<wchar_t>::length( targetWndClassName )) ){
-                      std::wcout << "PostMessage WM_PRIVATE_INJECT_BEGIN" << std::endl;
-                      PostMessage( injection_code , WM_PRIVATE_INJECT_BEGIN , 0 , reinterpret_cast<LPARAM>(std::get<0>( tup )) );
+
+                      WINDOWINFO windowInfo = { 0 };
+                      windowInfo.cbSize = sizeof(WINDOWINFO);
+                      if (GetWindowInfo(std::get<0>(tup), &windowInfo)) {
+                        std::wcout << className.data() << "," <<  windowInfo.dwStyle << std::endl;
+                        std::array<wchar_t, 128> windowText{};
+                        int r = GetWindowTextW( std::get<0>( tup ) ,windowText.data(), (int)windowText.size() );
+                        if( 0 < r ){
+                          if( 0 == std::char_traits<wchar_t>::compare( windowText.data() , L"VOICEPEAK" , r ) ){
+                            std::wcout << "PostMessage WM_PRIVATE_INJECT_BEGIN" << std::endl;
+                            PostMessage(injection_code, WM_PRIVATE_INJECT_BEGIN, 0, reinterpret_cast<LPARAM>(std::get<0>(tup)));
+                          }
+                        }
+                      }
                     }
                   }
                 }
