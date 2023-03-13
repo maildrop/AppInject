@@ -1,5 +1,27 @@
-﻿// injectionCode.cpp : このファイルには 'main' 関数が含まれています。プログラム実行の開始と終了がそこで行われます。
-//
+﻿/**
+  injectionCode.cpp : このファイルには 'main' 関数が含まれています。プログラム実行の開始と終了がそこで行われます。
+
+
+  プログラムの実行: Ctrl + F5 または [デバッグ] > [デバッグなしで開始] メニュー
+  プログラムのデバッグ: F5 または [デバッグ] > [デバッグの開始] メニュー
+ */
+
+// 作業を開始するためのヒント: 
+//   1. ソリューション エクスプローラー ウィンドウを使用してファイルを追加/管理します 
+//   2. チーム エクスプローラー ウィンドウを使用してソース管理に接続します
+//   3. 出力ウィンドウを使用して、ビルド出力とその他のメッセージを表示します
+//   4. エラー一覧ウィンドウを使用してエラーを表示します
+//   5. [プロジェクト] > [新しい項目の追加] と移動して新しいコード ファイルを作成するか、[プロジェクト] > [既存の項目の追加] と移動して既存のコード ファイルをプロジェクトに追加します
+//   6. 後ほどこのプロジェクトを再び開く場合、[ファイル] > [開く] > [プロジェクト] と移動して .sln ファイルを選択します
+
+
+#if !defined(WIN32_LEAN_AND_MEAN)               
+/* コンパイル速度の向上のために、
+   Windows ヘッダーからほとんど使用されていない部分を除外する
+   事を指示するマクロ */
+#define WIN32_LEAN_AND_MEAN 1
+#endif /* !defined(WIN32_LEAN_AND_MEAN) */
+
 
 #include <iostream>
 #include <locale>
@@ -26,11 +48,6 @@
 #define APP_VISIBLE_WINDOW_CLASS       ( L"JUCE_" )
 #define APP_COMMUNICATION_WINDOW_CLASS ( L"SACRIFICE_C" )
 
-static LRESULT comm_wnd_wndproc( HWND hWnd , UINT msg , WPARAM wParam , LPARAM lParam )
-{
-  return DefWindowProc( hWnd , msg, wParam ,lParam );
-}
-
 enum{
   WM_PRIVATE_HEAD = WM_APP+1,
   WM_PRIVATE_INJECT_BEGIN ,
@@ -38,7 +55,7 @@ enum{
   WM_PRIVATE_INJECT_DOWNLINK
 };
 
-int main()
+int main( int argc , char* argv[] )
 {
   std::locale::global( std::locale() );
 
@@ -365,13 +382,3 @@ int main()
   return EXIT_SUCCESS;
 }
 
-// プログラムの実行: Ctrl + F5 または [デバッグ] > [デバッグなしで開始] メニュー
-// プログラムのデバッグ: F5 または [デバッグ] > [デバッグの開始] メニュー
-
-// 作業を開始するためのヒント: 
-//    1. ソリューション エクスプローラー ウィンドウを使用してファイルを追加/管理します 
-//   2. チーム エクスプローラー ウィンドウを使用してソース管理に接続します
-//   3. 出力ウィンドウを使用して、ビルド出力とその他のメッセージを表示します
-//   4. エラー一覧ウィンドウを使用してエラーを表示します
-//   5. [プロジェクト] > [新しい項目の追加] と移動して新しいコード ファイルを作成するか、[プロジェクト] > [既存の項目の追加] と移動して既存のコード ファイルをプロジェクトに追加します
-//   6. 後ほどこのプロジェクトを再び開く場合、[ファイル] > [開く] > [プロジェクト] と移動して .sln ファイルを選択します
