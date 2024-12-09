@@ -1,8 +1,12 @@
 ﻿/**
-   Windows Console Program
+
    
-   (C) 2010-2023 TOGURO Mikito, 
 */
+
+/*  マクロ値のチェック  */
+#if (WINVER != _WIN32_WINNT )
+#error it was set different value between WINVER and _WIN32_WINNT. 
+#endif 
 
 #ifndef WINVER
 #define WINVER _WIN32_WINNT_WIN10 
@@ -10,11 +14,6 @@
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT WINVER
 #endif /* _WIN32_WINNT */
-
-/*  マクロ値のチェック  */
-#if (WINVER != _WIN32_WINNT )
-#error it was set different value between WINVER and _WIN32_WINNT. 
-#endif 
 
 #include <iostream>
 #include <type_traits>
@@ -50,8 +49,12 @@
 #pragma comment( lib , "ole32.lib" )
 
 static HANDLE currentThreadHandle(void);
-static BOOL CtrlHandler( DWORD fdwCtrlType );
-static SHORT entry( int argc , char** argv);
+
+extern "C"{
+  static BOOL   CtrlHandler( DWORD fdwCtrlType );
+}
+
+static SHORT  entry( int argc , char** argv);
 
 struct ReadInputArgument{
   HANDLE in;
@@ -165,6 +168,7 @@ namespace wh{
                            GetModuleHandle( NULL ) ,
                            new WindowingContext_type::ContextType() );
   }
+  
 };
 
 

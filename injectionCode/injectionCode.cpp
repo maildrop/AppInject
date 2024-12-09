@@ -63,6 +63,10 @@ int main( int argc , char* argv[] )
 {
   std::locale::global( std::locale{""} );
 
+  std::ignore = argc;
+  std::ignore = argv;
+
+
   if( ! SetDllDirectory(TEXT("")) ){
     assert( false && "SetDllDirectory(TEXT(\"\"))");
     return 3;
