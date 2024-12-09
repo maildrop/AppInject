@@ -15,6 +15,13 @@
 #define _WIN32_WINNT WINVER
 #endif /* _WIN32_WINNT */
 
+#if !defined(WIN32_LEAN_AND_MEAN)               
+/* コンパイル速度の向上のために、
+   Windows ヘッダーからほとんど使用されていない部分を除外する
+   事を指示するマクロ */
+#error WIN32_LEAN_AND_MEAN 
+#endif /* !defined(WIN32_LEAN_AND_MEAN) */
+
 #include <iostream>
 #include <type_traits>
 #include <tuple>
@@ -26,6 +33,7 @@
 /* Windows SDK */
 #include <tchar.h>
 #include <windows.h>
+#include <objbase.h>
 
 /* CRT */
 #include <process.h>
