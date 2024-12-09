@@ -38,8 +38,12 @@
 
 #include <tchar.h>
 #include <windows.h>
+#include <objbase.h>
+
+#include <shellapi.h>
 #include <pathcch.h>
 #include <commctrl.h>
+
 #include "../inject-data.h"
 
 #pragma comment (lib , "Pathcch.lib")
@@ -57,14 +61,14 @@ enum{
 
 int main( int argc , char* argv[] )
 {
-  std::locale::global( std::locale() );
+  std::locale::global( std::locale{""} );
 
   if( ! SetDllDirectory(TEXT("")) ){
     assert( false && "SetDllDirectory(TEXT(\"\"))");
     return 3;
   }
   
-  HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+  HRESULT hr = ::CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
   if( SUCCEEDED( hr ) ){
     const HMODULE hModule = GetModuleHandle(NULL);
     assert( hModule );
@@ -323,7 +327,7 @@ int main( int argc , char* argv[] )
                         std::array<wchar_t, 128> windowText{};
                         int r = GetWindowTextW( std::get<0>( tup ) ,windowText.data(), (int)windowText.size() );
                         if( 0 < r ){
-                          if( 0 == std::char_traits<wchar_t>::compare( windowText.data() , L"VOICEPEAK" , r ) ){
+                          if( 0 == std::char_traits<wchar_t>::compare( windowText.data() , L"VOICEPEAK" , std::char_traits<wchar_t>::length( L"VOICEPEAK") )) {
                             std::wcout << "PostMessage WM_PRIVATE_INJECT_BEGIN" << std::endl;
                             PostMessage(injection_code, WM_PRIVATE_INJECT_BEGIN, 0, reinterpret_cast<LPARAM>(std::get<0>(tup)));
                           }

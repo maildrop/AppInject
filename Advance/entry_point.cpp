@@ -20,6 +20,9 @@
 #include <type_traits>
 #include <tuple>
 #include <locale>
+#include <vector>
+#include <array>
+#include <deque>
 
 /* Windows SDK */
 #include <tchar.h>
@@ -42,17 +45,295 @@
 # endif /* defined( NDEBUG ) */
 #endif /* !defined( VERIFY ) */
 
+#pragma comment( lib , "user32.lib" )
+#pragma comment( lib , "gdi32.lib" )
 #pragma comment( lib , "ole32.lib" )
 
 static HANDLE currentThreadHandle(void);
 static BOOL CtrlHandler( DWORD fdwCtrlType );
 static SHORT entry( int argc , char** argv);
 
+struct ReadInputArgument{
+  HANDLE in;
+};
+
+static unsigned readInputThread( void * argument );
+
+static unsigned readInputThread( void * const argument )
+{
+  ReadInputArgument* arg = static_cast< ReadInputArgument* > ( argument );
+  assert( arg );
+  if( arg ){
+    if( INVALID_HANDLE_VALUE != arg->in ){
+      std::unique_ptr<std::array<char,1024>> buf = std::make_unique<std::array<char,1024>>();
+      for(;;){
+        DWORD numberOfBytesRead = 0;
+        SetLastError( ERROR_SUCCESS );
+        if( ReadFile( arg->in , buf->data() , DWORD( buf->size() ), &numberOfBytesRead , nullptr ) ){
+          if(! numberOfBytesRead ){
+            std::cout << "ReadFile read 0 byte" << std::endl;
+            break;
+          }
+          std::cout << std::string( buf->data() , numberOfBytesRead ) << std::endl;
+        }else{
+          DWORD const lastError = GetLastError();
+          switch( lastError ){
+          case ERROR_BROKEN_PIPE:
+            break;
+          case ERROR_OPERATION_ABORTED: // CancelSynchronousIo で停止させられた
+            break;
+          default:
+            std::cout << "ReadFile fail " << lastError << std::endl;
+          }
+          break;
+        }
+      }
+      VERIFY( CloseHandle( arg->in ) );
+    }
+  }
+  return 0;
+}
+
+namespace wh{
+
+  template<typename type_t>
+  inline LRESULT
+  windowProc( HWND const hWnd , UINT const msg , WPARAM const wParam , LPARAM const lParam )
+  {
+    if( WM_NCCREATE == msg ){
+      SetWindowLongPtr( hWnd, 0 , (LONG_PTR)(new type_t::ContextType()) );
+    }
+    LONG_PTR const longptr = GetWindowLongPtr( hWnd, 0 );
+    if( longptr ){
+      auto ptr = reinterpret_cast<type_t::ContextType *>( longptr );
+      LRESULT const lResult = ptr->wndProc( hWnd , msg , wParam , lParam );
+      if( WM_DESTROY == msg ){
+        SetWindowLongPtr( hWnd , 0 , 0 );
+        delete ptr;
+      }
+      return lResult;
+    }else{
+      return ::DefWindowProc( hWnd , msg, wParam, lParam );
+    }
+  }
+
+  template<typename context_type>
+  struct WindowingContext{
+    using ContextType = context_type;
+    ATOM atom;
+    WindowingContext()
+      :atom(NULL){
+    }
+    
+    ~WindowingContext()
+    {
+      if( atom ){
+        VERIFY( UnregisterClass( reinterpret_cast<LPCTSTR>( atom ) ,
+                                 GetModuleHandle( NULL )));
+      }
+    }
+  };
+
+  template<typename WindowingContext_type>
+  static ATOM simpleWindow( WindowingContext_type &context ){
+    WNDCLASSEX wndClassEx = {};
+    wndClassEx.cbSize = sizeof( wndClassEx );
+    wndClassEx.style = CS_HREDRAW | CS_VREDRAW;
+    wndClassEx.lpfnWndProc = &windowProc<WindowingContext_type>;
+    wndClassEx.cbClsExtra = 0;
+    static_assert( sizeof( void* ) <= sizeof( LONG_PTR ) , ""); // LONG_PTR のサイズは、void* を保持するのに十分な大きさを持っている。
+    wndClassEx.cbWndExtra = sizeof( LONG_PTR ) * 1 ;
+    wndClassEx.hInstance = GetModuleHandle( NULL );
+    wndClassEx.hIcon = LoadIcon(NULL , IDI_APPLICATION);
+    wndClassEx.hCursor = LoadCursor(NULL , IDC_ARROW);
+    wndClassEx.hbrBackground = (HBRUSH)GetStockObject(WHITE_BRUSH);
+    wndClassEx.lpszMenuName = NULL;
+    wndClassEx.lpszClassName = TEXT("SIMPLIFIEDWINDOW");
+    wndClassEx.hIconSm = LoadIcon(NULL , IDI_APPLICATION);
+    return ( context.atom = RegisterClassEx( &wndClassEx ) );
+  }
+
+  template<typename WindowingContext_type>
+  static HWND createWindow( WindowingContext_type &context ){
+    return CreateWindowEx( WS_EX_OVERLAPPEDWINDOW | WS_EX_APPWINDOW ,
+                           (PCTSTR)context.atom ,
+                           TEXT("Window"),
+                           WS_OVERLAPPEDWINDOW ,
+                           CW_USEDEFAULT, 0, CW_USEDEFAULT, 0,
+                           NULL,
+                           NULL ,
+                           GetModuleHandle( NULL ) ,
+                           new WindowingContext_type::ContextType() );
+  }
+};
+
+
 static SHORT entry( int argc , char** argv)
 {
   std::ignore = argc ;
   std::ignore = argv ;
-  std::cout << "hello world" << std::endl;
+
+  enum{
+    WM_PRIVATE = (WM_APP+1),
+    WM_PRIVATE_NULL ,
+    WM_PRIVATE_BEGIN,
+    WM_PRIVATE_PRCESS,
+    WM_PRIVATE_STOP,
+    WM_PRIVATE_SHUTDOWN,
+    WM_PRIVATE_END,
+  };
+  
+  struct WindowThis{
+    std::deque<std::wstring> queue;
+    uintptr_t readthread;
+
+    WindowThis()
+      : queue{},
+        readthread(NULL) {
+    }
+    
+    
+    inline LRESULT wndProc( HWND hWnd , UINT msg , WPARAM wParam , LPARAM lParam )
+    {
+      switch( msg ){
+      case WM_CREATE:
+        std::cout << "WM_CREATE" << std::endl;
+        break;
+      case WM_DESTROY:
+        std::cout << "WM_DESTROY" << std::endl;
+        PostQuitMessage( 0 );
+        break;
+      case WM_CLOSE:
+        std::cout << "WM_CLOSE" << std::endl;
+        break;
+      case WM_PAINT:
+        {
+          PAINTSTRUCT ps = {};
+          HDC hDC = BeginPaint( hWnd , &ps );
+          {
+            const std::wstring str = std::wstring{L"HEllo world"};
+            
+            int y = 0;
+            for( auto&& text : this->queue ){
+              y += 20;
+              TextOutW( hDC , 10 , y , text.c_str() , int( text.size()));
+              std::wcout << text.c_str() << std::endl;
+            }
+          }
+          EndPaint( hWnd, &ps );
+        }
+        break;
+      case WM_PRIVATE_BEGIN:
+        {
+          this->queue.emplace_back( L"begin" );
+          SetWindowText( hWnd , TEXT("Window - BEGIN") );
+          assert( 0 == this->readthread );
+          InvalidateRect( hWnd , nullptr,  TRUE );
+          PostMessage( hWnd , WM_PRIVATE_PRCESS , 0 , 0 );
+        }
+        return 0;
+      case WM_PRIVATE_PRCESS:
+        {
+          this->queue.emplace_back( L"process" );
+          SetWindowText( hWnd, TEXT("Window - PROCESSING") );
+          InvalidateRect( hWnd , nullptr , TRUE );
+        }
+        return 0;
+      default:
+        break;
+      }
+      return ::DefWindowProc( hWnd , msg , wParam , lParam );
+    }
+  };
+  
+  wh::WindowingContext<WindowThis> windowingContext{};
+  wh::simpleWindow( windowingContext );
+  HWND hWnd = wh::createWindow( windowingContext);
+  ShowWindow( hWnd , SW_SHOW );
+  
+  ReadInputArgument readInputArgument = {};
+  if( DuplicateHandle( GetCurrentProcess() , GetStdHandle( STD_INPUT_HANDLE ) ,
+                       GetCurrentProcess() , &readInputArgument.in ,
+                       NULL , FALSE ,
+                       DUPLICATE_SAME_ACCESS ) ){
+
+  }else{
+    std::cout << "Duplicate Handle fail" << std::endl;
+  }
+
+  uintptr_t readthread = _beginthreadex( nullptr , 0 ,
+                                         readInputThread , &readInputArgument ,
+                                         0 , nullptr );
+
+#if 0
+  HANDLE waitableTimer = CreateWaitableTimer( NULL,  TRUE , NULL );
+  assert( waitableTimer );
+  std::tuple< HANDLE , HANDLE > timerArgs = { waitableTimer , HANDLE( readthread )};
+  LARGE_INTEGER interval;
+  interval.QuadPart = -10LL * 1000LL * 1000LL * 1LL; // - (10)micro sec, (*1000)mili sec ,(*1000) sec 
+  VERIFY( SetWaitableTimer( waitableTimer ,   &interval , 1000 ,
+                            []( LPVOID lpArgToCompletionRoutine , DWORD dwTimerLowValue, DWORD dwTimerHighValue ){
+                              std::ignore = dwTimerHighValue ;
+                              std::ignore = dwTimerLowValue;
+                              std::tuple< HANDLE , HANDLE > *arg = reinterpret_cast<std::tuple<HANDLE,HANDLE>*>( lpArgToCompletionRoutine );
+                              VERIFY( CancelSynchronousIo( std::get<1>(*arg) ) );
+                              VERIFY( CloseHandle( std::get<0>( *arg ) ) );
+                            },
+                            reinterpret_cast<void*>( &timerArgs ), 
+                            FALSE ) );
+#endif
+
+  PostMessage( hWnd, WM_PRIVATE_BEGIN , 0 , 0 );
+  
+  std::vector<HANDLE> waitList{};
+  if( readthread ){
+    waitList.emplace_back( HANDLE(readthread) );
+
+    auto consumeMessage = []()->BOOL{
+      MSG msg = {0};
+      for(;msg.message!=WM_QUIT;){
+        if( !PeekMessage( &msg , NULL , 0 ,0 , PM_REMOVE ) ){
+          break;
+        }
+        (void)(TranslateMessage( &msg ));
+        (void)(DispatchMessage( &msg ));
+      }
+      if( msg.message == WM_QUIT ){
+        return FALSE;
+      }
+      return TRUE;
+    };
+    
+    for(;;){
+      assert( waitList.size() < (std::numeric_limits<DWORD>::max)()  );
+      assert( waitList.size() < 64 );
+      DWORD const waitValue = MsgWaitForMultipleObjectsEx( (DWORD)waitList.size() , waitList.data() , INFINITE , QS_ALLEVENTS , MWMO_ALERTABLE);
+      if( WAIT_OBJECT_0 <= waitValue && waitValue < (WAIT_OBJECT_0+waitList.size()) ){
+        if( waitList.at( waitValue - WAIT_OBJECT_0 ) == reinterpret_cast<HANDLE>( readthread )){
+          waitList.erase( waitList.begin() + ( waitValue - WAIT_OBJECT_0 ));
+          VERIFY( CloseHandle( reinterpret_cast<HANDLE>(readthread) ) );
+          DestroyWindow( hWnd );
+        }
+        if( !consumeMessage() ){
+          break;
+        }
+      }else if( (WAIT_OBJECT_0 + waitList.size() ) == waitValue ){
+        if( !consumeMessage() ){
+          break;
+        }
+      }else if( WAIT_ABANDONED_0 <= waitValue && waitValue < (WAIT_ABANDONED_0 + waitList.size() )){
+
+      }else if( WAIT_TIMEOUT == waitValue ){
+
+      }else if( WAIT_FAILED == waitValue  ){
+
+      }else if( WAIT_IO_COMPLETION == waitValue ){
+        std::cout << "WAIT_IO_COMPLETION" << std::endl;
+      }
+    }
+
+    std::cout << "end of message loop" << std::endl;
+  }
   return EXIT_SUCCESS;
 }
 
