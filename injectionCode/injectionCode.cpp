@@ -368,16 +368,18 @@ int main( int argc , char* argv[] )
                       int r = GetWindowTextW( std::get<1>(tup) , windowText.data() , (int)windowText.size() );
 
                       if( true ){ // デバッグ用の表示
-                        std::wcout << L" HWND: " << std::get<1>(tup) << L", " 
-                                   << L'"' << className.data() << L'"'
+                        std::wcout << L"{ \"HWND\" : " << std::get<1>(tup) << L", " 
+                                   << L"\"wndClassName\" : \"" << className.data() << L'"'
                                    << L",";
+                        std::wcout << "\"windowText\" : ";
+
                         if( 0 < r ){
-                          std::wcout << L'"' << std::wstring{ windowText.data(), size_t( r ) } << L'"';
+                          std::wcout << L'"' << std::wstring{windowText.data(), size_t(r)} << L'"';
                         }else{
                           assert( 0 == r );
                           std::wcout << L"\"\"" << std::endl;
                         }
-                        std::wcout << std::endl;
+                        std::wcout << "}" << std::endl;
                       }
                       
                       constexpr wchar_t window_suffix[] = L"VOICEPEAK";
