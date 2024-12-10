@@ -316,15 +316,19 @@ int main( int argc , char* argv[] )
     /*
       プロセスの立ち上げ
     */
+    std::wcout << L"Invoke \"" << shellExecInfo.lpFile << L"\"" << std::endl;;
     if( ShellExecuteExW( &shellExecInfo ) ){
       assert( shellExecInfo.hProcess ); // ここでは、 hProcess は必ず プロセスハンドルを返す。
+      std::wcout << L" ProcessHandleValue: " << (void*)( shellExecInfo.hProcess ) << std::endl;
 
-      /*
-        プロセスが入力待ちの状態になるまで待つ。（ Window の作成が終わって GetMessage() や PeekMessage() で待機状態になるのを待つ
-      */
       if( shellExecInfo.hProcess ){
-        //       std::wcout << (void*)( shellExecInfo.hProcess ) << std::endl;
+        /*
+          プロセスが入力待ちの状態になるまで待つ。（ Window の作成が終わって GetMessage() や PeekMessage() で待機状態になるのを待つ
+        */
+        std::wcout << "waiting idle.." ;
         DWORD const waitForInputIdleResult = WaitForInputIdle( shellExecInfo.hProcess , 10000 );
+        std::wcout << "done." << std::endl;
+        
         if( 0 == waitForInputIdleResult ){
           /*
             フックをかけるために、
