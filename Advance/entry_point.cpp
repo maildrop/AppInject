@@ -29,6 +29,8 @@
 #include <vector>
 #include <array>
 #include <deque>
+#include <limits>
+#include <iterator>
 
 /* Windows SDK */
 #include <tchar.h>
@@ -59,10 +61,10 @@
 static HANDLE currentThreadHandle(void);
 
 extern "C"{
-  static BOOL   CtrlHandler( DWORD fdwCtrlType );
+  static BOOL CtrlHandler( DWORD fdwCtrlType );
 }
 
-static SHORT  entry( int argc , char** argv);
+static SHORT entry( int argc , char** argv);
 
 struct ReadInputArgument{
   HANDLE in;
@@ -79,13 +81,14 @@ static unsigned readInputThread( void * const argument )
       std::unique_ptr<std::array<char,1024>> buf = std::make_unique<std::array<char,1024>>();
       for(;;){
         DWORD numberOfBytesRead = 0;
+
         SetLastError( ERROR_SUCCESS );
         if( ReadFile( arg->in , buf->data() , DWORD( buf->size() ), &numberOfBytesRead , nullptr ) ){
           if(! numberOfBytesRead ){
             std::cout << "ReadFile read 0 byte" << std::endl;
             break;
           }
-          std::cout << std::string( buf->data() , numberOfBytesRead ) << std::endl;
+          std::cout << std::string( buf->data() , numberOfBytesRead ) << std::flush;
         }else{
           DWORD const lastError = GetLastError();
           switch( lastError ){
@@ -99,7 +102,7 @@ static unsigned readInputThread( void * const argument )
           break;
         }
       }
-      VERIFY( CloseHandle( arg->in ) );
+      VERIFY( ::CloseHandle( arg->in ) );
     }
   }
   return 0;
@@ -204,8 +207,7 @@ static SHORT entry( int argc , char** argv)
         readthread(NULL) {
     }
     
-    
-    inline LRESULT wndProc( HWND hWnd , UINT msg , WPARAM wParam , LPARAM lParam )
+    LRESULT wndProc( HWND hWnd , UINT msg , WPARAM wParam , LPARAM lParam ) noexcept
     {
       switch( msg ){
       case WM_CREATE:
