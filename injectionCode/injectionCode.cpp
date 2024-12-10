@@ -72,12 +72,12 @@
   アプリケーションでデスクトップに表示されるウィンドウクラス
   JUCE は JUCE_ に適当な文字列が追加されたクラス名を使う
  */
-#define APP_VISIBLE_WINDOW_CLASS       ( L"JUCE_" )
+#define APP_VISIBLE_WINDOW_CLASS_SUFFIX  ( L"JUCE_" )
 
 /**
    アプリケーションと通信するためのウィンドウクラス
  */
-#define APP_COMMUNICATION_WINDOW_CLASS ( L"SACRIFICE_C" )
+#define APP_COMMUNICATION_WINDOW_CLASS   ( L"SACRIFICE_C" )
 
 /**
    プライベートなウィンドウメッセージ
@@ -88,6 +88,46 @@ enum{
   WM_PRIVATE_INJECT_UPLINK,
   WM_PRIVATE_INJECT_DOWNLINK
 };
+
+/**
+   引数 process で与えられた プロセスが input idle 状態になるのを待機する。
+   duration: 一度の待機時間 単位 msec.
+   num: 待機回数
+   全体で、最大 duration * num 回数 msec 待機する。
+ */
+static
+DWORD wait_for_input_idle_of_execute_process( const HANDLE& process ,
+                                              const int duration = 500 , const int num = 120 ) noexcept
+{
+
+  if( process == NULL ){
+    std::wcerr << L"process is not spawned" << std::endl;
+    return WAIT_FAILED;
+  }
+
+  DWORD result = WAIT_TIMEOUT ;
+  std::wcout << L"waiting idling state of the process ." << std::flush ;
+  
+  for( int i = 0 ; i < num && WAIT_TIMEOUT == result ; ++i ){
+    assert( process != NULL );
+    DWORD const waitForInputIdleResult = WaitForInputIdle( process , duration );
+    
+    if( 0 == waitForInputIdleResult ){
+      result = waitForInputIdleResult;
+      break;
+    }else if( WAIT_TIMEOUT == waitForInputIdleResult ){
+      assert( result == waitForInputIdleResult );
+    }else if( WAIT_FAILED == waitForInputIdleResult ){
+      result = waitForInputIdleResult;
+      break;
+    }
+    assert( WAIT_TIMEOUT == waitForInputIdleResult );
+    std::wcout << L"." << std::flush;
+  }
+  
+  std::wcout << L". done." << std::endl;
+  return result;
+}
 
 /**
    プログラムのエントリーポイント
@@ -168,7 +208,7 @@ int main( int argc , char* argv[] )
         reinterpret_cast<struct WindowPrivateData*>( dwRefData );
       
       if( ! self ){
-        
+        /* WindowPrivateData が 渡されない場合これは、プログラムのロジックエラーである  */
         assert( self );
         
         switch( uMsg ){
@@ -180,16 +220,18 @@ int main( int argc , char* argv[] )
         default:
           return DefSubclassProc( hWnd, uMsg , wParam , lParam );
         }
+        
       }
       
       switch( uMsg ){
-
       case WM_TIMER:
         if( wParam == self->nIDEvent ){
           if( self->remoteWindow ){
             if( !IsWindow( self->remoteWindow ) ){
               std::wcout << "remoteWindow is invalid" << std::endl;
-              VERIFY( DestroyWindow( hWnd ) );
+              /* WM_TIMER が飛んでくる間は、WM_PRIVATE_INJECT_BEGIN の ループ内にいるはずだから*/
+              assert( self->initializing );
+              PostQuitMessage( 1 ); // PostQuitMessage で1段目のループを抜ける
               return 0;
             }else{
               PostMessageW( self->remoteWindow ,
@@ -207,13 +249,22 @@ int main( int argc , char* argv[] )
       case WM_PRIVATE_INJECT_BEGIN:
         {
           self->remoteWindow = reinterpret_cast<HWND>( lParam );
-          std::wcout << "remoteWindow " <<  self->remoteWindow << std::endl;
+
+          std::wcout << "remoteWindowHandle: ";
+          if( self->remoteWindow ){
+            std::wcout << self->remoteWindow ;
+          }else{
+            std::wcout << L"NULL";
+          }
+          std::wcout << std::endl;
+          
           if( self->remoteWindow ){
             if( self->initializing ){
               // 再投入されている場合がある
-              std::wcout << L"再投入？" << std::endl;
+              std::wcerr << L"再投入？" << std::endl;
             }else{
               if( self->nIDEvent == SetTimer( hWnd , self->nIDEvent , 1000 , NULL ) ){
+                self->initializing = true;
                 SendMessageW( self->remoteWindow ,
                               WM_NULL, 0, 0 );
                 PostMessageW( self->remoteWindow ,
@@ -222,7 +273,7 @@ int main( int argc , char* argv[] )
                               reinterpret_cast<LPARAM>(hWnd) ) ;
                 BOOL bRet;
                 MSG msg = {0};
-                while( (bRet = GetMessage( &msg, NULL, 0, 0 )) != 0){ 
+                while( (bRet = GetMessage( &msg, NULL, 0, 0 )) ){ 
                   if (bRet == -1) {
                     // handle the error and possibly exit
                     break;
@@ -233,6 +284,14 @@ int main( int argc , char* argv[] )
                 } // end of while
                 KillTimer( hWnd , self->nIDEvent );
                 self->initializing = false;
+
+                if( 0 == bRet && /* WM_QUIT を受けての msg.wParam が 0 では無い時はエラーなので、*/
+                    WM_QUIT == msg.message &&
+                    0 != msg.wParam ){
+                  PostQuitMessage( int(msg.wParam) );
+                }
+              }else{
+                // タイマーの設定に失敗した
               }
             }
           }
@@ -323,11 +382,12 @@ int main( int argc , char* argv[] )
 
       if( shellExecInfo.hProcess ){
         /*
-          プロセスが入力待ちの状態になるまで待つ。（ Window の作成が終わって GetMessage() や PeekMessage() で待機状態になるのを待つ
+          プロセスが入力待ちの状態になるまで 最大60秒待つ。
+          （ Window の作成が終わって GetMessage() や PeekMessage() で待機状態になるのを待つ)
         */
-        std::wcout << "waiting idle.." ;
-        DWORD const waitForInputIdleResult = WaitForInputIdle( shellExecInfo.hProcess , 10000 );
-        std::wcout << "done." << std::endl;
+
+        DWORD const waitForInputIdleResult =
+          wait_for_input_idle_of_execute_process(shellExecInfo.hProcess);
         
         if( 0 == waitForInputIdleResult ){
           /*
@@ -365,11 +425,20 @@ int main( int argc , char* argv[] )
                 // 左辺は constexpr , 右辺の(..max)()は、Windows の関数型マクロ max に対応するためのハック
                 static_assert( className.size() < (std::numeric_limits<decltype( className.size() )>::max)() ,""); 
                 if( GetClassNameW( std::get<1>(tup) , className.data() , int(className.size()) ) ){
-                  for( auto&& targetWndClassName : { APP_VISIBLE_WINDOW_CLASS,  APP_COMMUNICATION_WINDOW_CLASS  } ){
-                    if( 0 == std::char_traits<wchar_t>::compare( className.data() , targetWndClassName ,std::char_traits<wchar_t>::length( targetWndClassName )) ){
-
+                  for( auto&& targetWndClassName :
+                         { APP_VISIBLE_WINDOW_CLASS_SUFFIX,  APP_COMMUNICATION_WINDOW_CLASS  } ){
+                    
+                    /* 前方一致で探すので比較の文字列長を指定する */
+                    const size_t targetWndClassNameLength =
+                      std::char_traits<wchar_t>::length( targetWndClassName );
+                    if( ( targetWndClassNameLength <= std::char_traits<wchar_t>::length( className.data() ) ) &&
+                        ( 0 == std::char_traits<wchar_t>::compare( className.data() ,
+                                                                   targetWndClassName ,
+                                                                   targetWndClassNameLength ))){
+                       /* WindowText 大体の場合ウィンドウのタイトル  */
                       std::array<wchar_t, 128> windowText{};
-                      int r = GetWindowTextW( std::get<1>(tup) , windowText.data() , (int)windowText.size() );
+                      
+                      const int r = GetWindowTextW( std::get<1>(tup) , windowText.data() , (int)windowText.size() );
 
                       if( true ){ // デバッグ用の表示
                         std::wcout << L"{ \"HWND\" : " << std::get<1>(tup) << L", " 
@@ -385,15 +454,15 @@ int main( int argc , char* argv[] )
                         }
                         std::wcout << "}" << std::endl;
                       }
-                      
+
                       constexpr wchar_t window_suffix[] = L"VOICEPEAK";
-                      if( ((::IsWindowVisible(std::get<1>(tup))) /* 表示されていて */ && 
+                      if( 0 < r && /* GetWindowTextW に成功しているもののうち */
+                          ((::IsWindowVisible(std::get<1>(tup))) /* 表示されていて */ && 
                            NULL == ::GetWindowLongPtr(std::get<1>(tup), GWLP_HWNDPARENT) /* 親ウィンドウを持たない */) ||
-                          ( 0 < r &&
-                            0 == std::char_traits<wchar_t>::compare( windowText.data() ,
+                          ( 0 == std::char_traits<wchar_t>::compare( windowText.data() ,
                                                                      window_suffix ,
                                                                      std::char_traits<wchar_t>::length( window_suffix ) ) )){
-                          inject_threadid.emplace( tup );
+                        inject_threadid.emplace( tup );
                       }
                     }
                   }
@@ -403,12 +472,15 @@ int main( int argc , char* argv[] )
               if( inject_threadid.empty() ){
                 (void)Sleep( 100 );
               }
-
             } // end of numberOfTry 
           }
-
           // ここまで来ると inject_threadid が正しいスレッドを選択する
 
+          if( inject_threadid.empty() ){
+
+          }
+
+          assert( !inject_threadid.empty() );
           {
             PathCchRemoveFileSpec( path->data() , path->size() );
             PathCchAppend( path->data() , path->size() , L"WMPaintNotify.dll" );
@@ -434,7 +506,8 @@ int main( int argc , char* argv[] )
                         // 左辺は constexpr , 右辺の(..max)()は、Windows の関数型マクロ max に対応するためのハック
                         static_assert( className.size() < (std::numeric_limits<decltype( className.size() )>::max)() ,"");
                         if( GetClassNameW( std::get<1>(tup) , className.data() , int(className.size()) ) ){
-                          for( auto&& targetWndClassName : { APP_VISIBLE_WINDOW_CLASS,  APP_COMMUNICATION_WINDOW_CLASS  } ){
+                          for( auto&& targetWndClassName :
+                                 { APP_VISIBLE_WINDOW_CLASS_SUFFIX,  APP_COMMUNICATION_WINDOW_CLASS  } ){
                             if( 0 == std::char_traits<wchar_t>::compare( className.data() , targetWndClassName ,std::char_traits<wchar_t>::length( targetWndClassName )) ){
                               WINDOWINFO windowInfo = { 0 };
                               windowInfo.cbSize = sizeof(WINDOWINFO);
