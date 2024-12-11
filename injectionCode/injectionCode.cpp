@@ -315,18 +315,26 @@ int main( int argc , char* argv[] )
         }
         break;
       default:
-        if( self->injectMessage == uMsg ){
-          switch( wParam ){
-        case static_cast<WPARAM>( InjectControl::WAKEUP ):
-          PostMessage( hWnd , WM_PRIVATE_INJECT_UPLINK , 0 ,0 );
-          return 0;
-          case static_cast<WPARAM>( InjectControl::PAINT_MESSAGE ):
-            std::wcout << "WM_PAINT" << std::endl;
-            return 0;
-          default:
+        {
+          // self->injectMessage は、RegisterWindowMessageW() で実行時に決まる値なので、
+          // この if文 で処理する 
+          if( self->injectMessage == uMsg ){
+            switch( wParam ){
+            case static_cast<WPARAM>( InjectControl::SHUTDOWN ): // not implemented
+              
+              return 0;
+            case static_cast<WPARAM>( InjectControl::WAKEUP ):
+              PostMessage( hWnd , WM_PRIVATE_INJECT_UPLINK , 0 ,0 );
+              return 0;
+            case static_cast<WPARAM>( InjectControl::PAINT_MESSAGE ):
+              std::wcout << "WM_PAINT" << std::endl;
+              return 0;
+            default:
             break;
+            }
+            return 0;
           }
-          return 0;
+          
         }
         break;
       }
