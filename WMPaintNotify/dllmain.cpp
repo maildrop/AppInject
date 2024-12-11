@@ -13,8 +13,12 @@ extern "C"{
 
 static UINT injectMessage = 0;
 static HWND notifyWindow = 0;
+static LRESULT doHookProc( int nCode , WPARAM wParam , LPARAM lParam ) noexcept;
 
-BOOL APIENTRY DllMain( HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved )
+/**
+   DLL エントリーポイント
+ */
+BOOL APIENTRY DllMain( HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved )
 {
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH:
@@ -33,7 +37,21 @@ BOOL APIENTRY DllMain( HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpRese
     return TRUE;
 }
 
+
+/**
+   HookProc は、C の関数として export
+   C++ の関数を呼び出すためのラッパーとして機能する。 noexcept 修飾を消去するため。
+ */
+
 __declspec(dllexport) LRESULT CALLBACK HookProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+  return doHookProc( nCode , wParam , lParam );
+}
+
+/**
+   HookProc の実装
+ */
+static LRESULT doHookProc( int nCode , WPARAM wParam , LPARAM lParam ) noexcept
 {
   if (nCode < 0) {
     return CallNextHookEx(NULL, nCode, wParam, lParam);
@@ -62,7 +80,7 @@ __declspec(dllexport) LRESULT CALLBACK HookProc(int nCode, WPARAM wParam, LPARAM
       
     default:
       {
-        if (injectMessage == msg->message) {
+        if ( msg->message == injectMessage ) {
           OutputDebugString(TEXT("INJECT MESSAGE"));
           switch (msg->wParam) {
           case static_cast<WPARAM>(InjectControl::NOP):
@@ -70,14 +88,28 @@ __declspec(dllexport) LRESULT CALLBACK HookProc(int nCode, WPARAM wParam, LPARAM
           case static_cast<WPARAM>(InjectControl::SHUTDOWN):
             break;
           case static_cast<WPARAM>(InjectControl::WAKEUP):
-            OutputDebugStringW(L"InjectControl::WAKEUP");
-            if (msg->lParam) {
-              notifyWindow = reinterpret_cast<HWND>(msg->lParam);
-              OutputDebugStringW(std::to_wstring(msg->lParam).c_str());
-              LRESULT const lresult = PostMessage(reinterpret_cast<HWND>(msg->lParam), injectMessage, static_cast<WPARAM>(InjectControl::WAKEUP), (LPARAM)(msg->hwnd));
-              DWORD const lastError = GetLastError();
-              OutputDebugStringW((std::wstring{ L"LRESULT=" } + std::to_wstring(lresult) +
-                                  std::wstring{ L" lastError=" } + std::to_wstring(lastError)).c_str());
+            {
+              OutputDebugStringW(L"InjectControl::WAKEUP");
+              if (msg->lParam) {
+                notifyWindow = reinterpret_cast<HWND>(msg->lParam);
+                assert( notifyWindow );
+                
+#if !defined( NDEBUG )
+                OutputDebugStringW(std::to_wstring(msg->lParam).c_str());
+#endif /* !defined( NDEBUG ) */
+                /* WAKEUP メッセージに対応して、notifyするウィンドウに通知する。 */
+                LRESULT const lresult =
+                  PostMessage(reinterpret_cast<HWND>(msg->lParam),
+                              injectMessage,
+                              static_cast<WPARAM>(InjectControl::WAKEUP),
+                              (LPARAM)(msg->hwnd));
+
+#if !defined( NDEBUG )
+                DWORD const lastError = GetLastError();
+                OutputDebugStringW((std::wstring{ L"LRESULT=" } + std::to_wstring(lresult) +
+                                    std::wstring{ L" lastError=" } + std::to_wstring(lastError)).c_str());
+#endif /* !defined( NDEBUG ) */
+              }
             }
             break;
           default:
@@ -95,4 +127,5 @@ __declspec(dllexport) LRESULT CALLBACK HookProc(int nCode, WPARAM wParam, LPARAM
   */
   return CallNextHookEx(NULL, nCode, wParam, lParam);
 }
+
 
