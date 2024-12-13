@@ -61,6 +61,8 @@
 static HANDLE currentThreadHandle(void);
 
 extern "C"{
+  /* いわゆる割り込みハンドラ
+     システムが提供する別スレッドから呼ばれる */
   static BOOL CtrlHandler( DWORD fdwCtrlType );
 }
 
@@ -225,7 +227,7 @@ static SHORT entry( int argc , char** argv)
           PAINTSTRUCT ps = {};
           HDC hDC = BeginPaint( hWnd , &ps );
           {
-            const std::wstring str = std::wstring{L"HEllo world"};
+            const std::wstring str = std::wstring{L"Hello world."};
             
             int y = 0;
             for( auto&& text : this->queue ){

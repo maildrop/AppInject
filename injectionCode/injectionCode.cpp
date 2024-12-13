@@ -30,7 +30,7 @@
 /* コンパイル速度の向上のために、
    Windows ヘッダーからほとんど使用されていない部分を除外する
    事を指示するマクロ */
-#error WIN32_LEAN_AND_MEAN 
+#error WIN32_LEAN_AND_MEAN not defined.
 #endif /* !defined(WIN32_LEAN_AND_MEAN) */
 
 #include <iostream>
@@ -55,6 +55,8 @@
 #include <shellapi.h> // shell操作関数
 
 #include "../inject-data.h"
+#include "appInjection.h"
+#include "injectionCode.h"
 
 #pragma comment (lib , "Pathcch.lib")
 #pragma comment (lib , "Comctl32.lib" )
@@ -86,18 +88,98 @@ enum{
   WM_PRIVATE_HEAD = (WM_APP+1),
   WM_PRIVATE_INJECT_BEGIN ,
   WM_PRIVATE_INJECT_UPLINK,
-  WM_PRIVATE_INJECT_DOWNLINK
+  WM_PRIVATE_INJECT_DOWNLINK,
+  WM_PRIVATE_TAIL
 };
+
+
+/**
+   ターゲットウィンドウを探すフィルタ関数 オブジェクト
+ */
+struct FilterCondition{
+
+  const RuntimeOption& runtimeOption;
+  explicit FilterCondition( const RuntimeOption& runtimeOption )
+    : runtimeOption( runtimeOption )
+  {
+    return;
+  }
+  
+  static constexpr wchar_t window_suffix[] = L"VOICEPEAK";
+
+  /**
+     ターゲットウィンドウを探すフィルタ関数
+   */
+  inline bool operator()( HWND hWnd ) const noexcept
+  {
+    if( ::IsWindow( hWnd ) ){ // Window である。 HWND として有効である。
+      
+      if( ::IsWindowVisible( hWnd ) ){ // Window が可視状態ならば
+        return true;
+      }
+
+      { // ウィンドウテキストが、 window_suffix で始まっていれば 
+        std::array<wchar_t, 128> windowText{};
+        const int r = GetWindowTextW( hWnd , windowText.data() , (int)windowText.size());
+        if( 0 < r &&
+            0 == std::char_traits<wchar_t>::compare( windowText.data() ,
+                                                     window_suffix ,
+                                                     std::char_traits<wchar_t>::length( window_suffix )) ){
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+};
+
+
+/**
+   極めてシンプルなウィンドウクラスを登録する
+ */
+ATOM registerSimpleWindowClass() noexcept
+{
+  const HMODULE hModule = GetModuleHandle(NULL);
+  assert( hModule );
+  
+  const WNDCLASSW comm_wndclass = {
+    CS_HREDRAW | CS_VREDRAW ,
+    DefWindowProc,
+    0,0,
+    hModule,
+    LoadIcon(NULL , IDI_APPLICATION),
+    LoadCursor(NULL , IDC_ARROW),
+    (HBRUSH)GetStockObject(WHITE_BRUSH),
+    NULL,
+    L"injectcommunicationWindowClass"
+  };
+
+  ATOM const wndClass = ::RegisterClassW(&comm_wndclass);
+  assert( wndClass );
+
+  return wndClass;
+}
+
+/**
+   極めてシンプルなウィンドウクラスのATOMを取得する
+ */
+const ATOM& getSimpleWindowClass() noexcept
+{
+  static ATOM wndClass{NULL};
+  if( !wndClass ){
+    wndClass = registerSimpleWindowClass();
+  }
+  return wndClass;
+}
 
 /**
    引数 process で与えられた プロセスが input idle 状態になるのを待機する。
-   duration: 一度の待機時間 単位 msec.
-   num: 待機回数
+   duration: 一度の待機時間 単位 msec. default: 500 (in injectionCode.h)
+   num: 待機回数 default: 120 (in injectionCode.h)
    全体で、最大 duration * num 回数 msec 待機する。
  */
-static
 DWORD wait_for_input_idle_of_execute_process( const HANDLE& process ,
-                                              const int duration = 500 , const int num = 120 ) noexcept
+                                              const int duration , const int num ) noexcept
 {
 
   if( process == NULL ){
@@ -121,6 +203,7 @@ DWORD wait_for_input_idle_of_execute_process( const HANDLE& process ,
       result = waitForInputIdleResult;
       break;
     }
+    
     assert( WAIT_TIMEOUT == waitForInputIdleResult );
     std::wcout << L"." << std::flush;
   }
@@ -130,74 +213,45 @@ DWORD wait_for_input_idle_of_execute_process( const HANDLE& process ,
 }
 
 /**
-   プログラムのエントリーポイント
+   プログラムのメイン部分
  */
-int main( int argc , char* argv[] )
+static
+int entry_point(RuntimeOption&& option, const int &argc , const char* const * argv ) noexcept
 {
-  std::locale::global( std::locale{""} );
-
+  std::ignore = option;
   std::ignore = argc;
   std::ignore = argv;
-
-  // LoadLibrary のディレクトリを制限
-  if( ! SetDllDirectory(TEXT("")) ){
-    assert( !"SetDllDirectory(TEXT(\"\"))");
-    std::wcerr << "SetDllDirectory(\"\") failed." << std::endl;
-    return 2;
-  }
-  
-  {
-    // COMのスレッドアパートメントの宣言
-    HRESULT hr = ::CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    if(! SUCCEEDED( hr ) ){
-      assert( !"CoInitializeEx()" );
-      std::wcerr << "CoInitializeEx() failed"  << std::endl;
-      return 3;
-    }
-  }
-  
-  const HMODULE hModule = GetModuleHandle(NULL);
-  assert( hModule );
-
+  /* まず 通信用のメッセージを登録する */
   UINT const inject = RegisterWindowMessageW( WM_INJECT_STRING );
+  if( !inject ){
+    return app::ERROR_REGISTER_WINDOW_MESSAGE_FAIL;
+  }
 
-  const WNDCLASSW comm_wndclass = {
-    CS_HREDRAW | CS_VREDRAW ,
-    DefWindowProc,
-    0,0,
-    hModule,
-    LoadIcon(NULL , IDI_APPLICATION),
-    LoadCursor(NULL , IDC_ARROW),
-    (HBRUSH)GetStockObject(WHITE_BRUSH),
-    NULL,
-    L"injectcommunicationWindowClass"
-  };
-
-  ATOM const wndClass = RegisterClassW(&comm_wndclass);
-  assert( wndClass );
+  assert( inject );
   
   HWND injection_code = 
     CreateWindowExW( 0,
-                     PCTSTR( wndClass ),
+                     PCTSTR( getSimpleWindowClass() ),
                      L"InjectionCode",
                      WS_OVERLAPPEDWINDOW,
                      CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
                      HWND_MESSAGE ,
                      NULL ,
-                     hModule ,
+                     GetModuleHandle( NULL ) ,
                      nullptr );
+
 #if !defined( NDEBUG )
   std::wcout << L"injectionHWND " << injection_code << std::endl;
 #endif
   
   assert( injection_code );
-  
+
   struct WindowPrivateData{
-    UINT_PTR nIDEvent; // タイマーのID 
-    UINT injectMessage;
+    UINT_PTR nIDEvent;  // タイマーのID 
+    UINT injectMessage; // RegisterWindowMessageW() で登録したウィンドウメッセージ
     SUBCLASSPROC pfnSubClass;
-    HWND remoteWindow;
-    bool initializing;
+    HWND remoteWindow;  // インジェクションを行っているウィンドウ
+    bool initializing;  // 再投入の確認用のフラグ
   };
     
   auto subclassProc =
@@ -348,11 +402,26 @@ int main( int argc , char* argv[] )
                              0 ,
                              reinterpret_cast<DWORD_PTR>(&windowPrivateData) ) );
 
+  // テスト用
+#if 0
+  struct InjectionControlData{
+    LRESULT
+    subClassProc( HWND hWnd , UINT uMsg , WPARAM wParam , LPARAM lParam ) noexcept
+    {
+      OutputDebugStringW(L"subClassProc\n" );
+      return ::DefSubclassProc( hWnd, uMsg , wParam , lParam );
+    }
+  };
+  
+  wh::window_subclassify<InjectionControlData>( injection_code );
+#endif
+
+  
   /* この実行可能ファイルのパス */
   std::unique_ptr<std::array<wchar_t, MAX_PATH>> path =
     std::make_unique<std::array<wchar_t, MAX_PATH>>();
 
-  if( 0 < GetModuleFileNameW( hModule , (LPWSTR)(path->data()) , (DWORD)path->size() )){
+  if( 0 < GetModuleFileNameW( GetModuleHandle( NULL ) , (LPWSTR)(path->data()) , (DWORD)path->size() )){
 
     {
       HRESULT hr = PathCchRemoveFileSpec( path->data() , path->size() );
@@ -414,72 +483,79 @@ int main( int argc , char* argv[] )
                  enumProcArg.whset.clear() , ++numberOfTry ){
               // TODO ここでプロセスがまだ生きている事をチェックしないといけない
               
-              EnumWindows( []( HWND hWnd , LPARAM lParam )->BOOL{
-                struct EnumProcArg* arg = reinterpret_cast< struct EnumProcArg*>( lParam );
-                
+              if( ::EnumWindows( []( HWND hWnd , LPARAM lParam )->BOOL{
+
+                /*
+                  Window の属しているプロセスID とスレッドID を取得して、ターゲットのプロセスのウィンドウかどうかを判定する
+                */
+                struct EnumProcArg* const arg = reinterpret_cast<struct EnumProcArg*>( lParam );
+
                 DWORD processId = 0;
-                DWORD threadId = GetWindowThreadProcessId( hWnd ,&processId );
-                
-                if( 0 < threadId ){
+                const DWORD threadId = ::GetWindowThreadProcessId( hWnd ,&processId );
+
+                if( 0 < threadId ){ 
                   if( processId == arg->processId ){
                     arg->whset.emplace( threadId , hWnd  );
                   }
                 }
+                
                 return TRUE;
-              }, (LPARAM)&enumProcArg );
-              
-              for( auto&& tup : enumProcArg.whset ){
-                std::array<wchar_t, 128> className;
-                // 左辺は constexpr , 右辺の(..max)()は、Windows の関数型マクロ max に対応するためのハック
-                static_assert( className.size() < (std::numeric_limits<decltype( className.size() )>::max)() ,""); 
-                if( GetClassNameW( std::get<1>(tup) , className.data() , int(className.size()) ) ){
-                  for( auto&& targetWndClassName :
-                         { APP_VISIBLE_WINDOW_CLASS_SUFFIX,  APP_COMMUNICATION_WINDOW_CLASS  } ){
-                    
-                    /* 前方一致で探すので比較の文字列長を指定する */
-                    const size_t targetWndClassNameLength =
-                      std::char_traits<wchar_t>::length( targetWndClassName );
-                    if( ( targetWndClassNameLength <= std::char_traits<wchar_t>::length( className.data() ) ) &&
-                        ( 0 == std::char_traits<wchar_t>::compare( className.data() ,
-                                                                   targetWndClassName ,
-                                                                   targetWndClassNameLength ))){
-                       /* WindowText 大体の場合ウィンドウのタイトル  */
-                      std::array<wchar_t, 128> windowText{};
+              }, reinterpret_cast<LPARAM>(&enumProcArg) ) ){
+
+                for( auto&& tup : enumProcArg.whset ){
+                  std::array<wchar_t, 128> className;
+                  // 左辺は constexpr , 右辺の(..max)()は、Windows の関数型マクロ max に対応するためのハック
+                  static_assert( className.size() < (std::numeric_limits<decltype( className.size() )>::max)() ,""); 
+                  if( GetClassNameW( std::get<1>(tup) , className.data() , int(className.size()) ) ){
+                    for( auto&& targetWndClassName :
+                           { APP_VISIBLE_WINDOW_CLASS_SUFFIX,  APP_COMMUNICATION_WINDOW_CLASS  } ){
                       
-                      const int r = GetWindowTextW( std::get<1>(tup) , windowText.data() , (int)windowText.size() );
-
-                      if( true ){ // デバッグ用の表示
-                        std::wcout << L"{ \"HWND\" : " << std::get<1>(tup) << L", " 
-                                   << L"\"wndClassName\" : \"" << className.data() << L'"'
-                                   << L",";
-                        std::wcout << "\"windowText\" : ";
-
-                        if( 0 < r ){
-                          std::wcout << L'"' << std::wstring{windowText.data(), size_t(r)} << L'"';
-                        }else{
-                          assert( 0 == r );
-                          std::wcout << L"\"\"" << std::endl;
+                      /* 前方一致で探すので比較の文字列長を指定する */
+                      const size_t targetWndClassNameLength =
+                        std::char_traits<wchar_t>::length( targetWndClassName );
+                      if( ( targetWndClassNameLength <= std::char_traits<wchar_t>::length( className.data() ) ) &&
+                          ( 0 == std::char_traits<wchar_t>::compare( className.data() ,
+                                                                     targetWndClassName ,
+                                                                     targetWndClassNameLength ))){
+                        /* WindowText 大体の場合ウィンドウのタイトル  */
+                        std::array<wchar_t, 128> windowText{};
+                        
+                        const int r = GetWindowTextW( std::get<1>(tup) , windowText.data() , (int)windowText.size() );
+                        
+                        if( true ){ // デバッグ用の表示
+                          std::wcout << L"{\"HWND\": " << std::get<1>(tup) << L", " 
+                                     << L"\"wndClassName\": \"" << className.data() << L'"'
+                                     << L" , ";
+                          std::wcout << "\"windowText\": ";
+                          
+                          if( 0 < r ){
+                            std::wcout << L'"' << std::wstring{windowText.data(), size_t(r)} << L'"';
+                          }else{
+                            assert( 0 == r );
+                            std::wcout << L"\"\"" << std::endl;
+                          }
+                          std::wcout << "}" << std::endl;
                         }
-                        std::wcout << "}" << std::endl;
-                      }
-
-                      constexpr wchar_t window_suffix[] = L"VOICEPEAK";
-                      if( 0 < r && /* GetWindowTextW に成功しているもののうち */
-                          ((::IsWindowVisible(std::get<1>(tup))) /* 表示されていて */ && 
-                           NULL == ::GetWindowLongPtr(std::get<1>(tup), GWLP_HWNDPARENT) /* 親ウィンドウを持たない */) ||
-                          ( 0 == std::char_traits<wchar_t>::compare( windowText.data() ,
-                                                                     window_suffix ,
-                                                                     std::char_traits<wchar_t>::length( window_suffix ) ) )){
-                        inject_threadid.emplace( tup );
+                        
+                        constexpr wchar_t window_suffix[] = L"VOICEPEAK";
+                        if( 0 < r && /* GetWindowTextW に成功しているもののうち */
+                            ((::IsWindowVisible(std::get<1>(tup))) /* 表示されていて */ && 
+                             NULL == ::GetWindowLongPtr(std::get<1>(tup), GWLP_HWNDPARENT) /* 親ウィンドウを持たない */) ||
+                            ( 0 == std::char_traits<wchar_t>::compare( windowText.data() ,
+                                                                       window_suffix ,
+                                                                       std::char_traits<wchar_t>::length( window_suffix ) ) )){
+                          inject_threadid.emplace( tup );
+                        }
                       }
                     }
                   }
-                }
-              }// end of for enumProcArg
+                }// end of for enumProcArg
+              }
 
               if( inject_threadid.empty() ){
                 (void)Sleep( 100 );
               }
+              
             } // end of numberOfTry 
           }
           // ここまで来ると inject_threadid が正しいスレッドを選択する
@@ -581,8 +657,42 @@ int main( int argc , char* argv[] )
       }
     }
   }
+  return 0;
+}
 
+/**
+   プログラムのエントリーポイント
+ */
+int main( int argc , char* argv[] )
+{
+  
+  std::locale::global( std::locale{""} );
+
+  std::ignore = argc;
+  std::ignore = argv;
+  
+  // LoadLibrary のディレクトリを制限
+  if( ! SetDllDirectory(TEXT("")) ){
+    assert( !"SetDllDirectory(TEXT(\"\"))");
+    std::wcerr << "SetDllDirectory(\"\") failed." << std::endl;
+    return app::ERROR_SetDllDirectory;
+  }
+  
+  {
+    // COMのスレッドアパートメントの宣言
+    HRESULT hr = ::CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if(! SUCCEEDED( hr ) ){
+      assert( !"CoInitializeEx()" );
+      std::wcerr << "CoInitializeEx() failed"  << std::endl;
+      return app::ERROR_CoInitializeEx;
+    }
+  }
+
+  RuntimeOption runtimeOption{ false };
+  
+  const int resultCode = entry_point( std::move( runtimeOption ) , argc , argv );
   (void) ::CoUninitialize();
-  return EXIT_SUCCESS;
+
+  return resultCode;
 }
 
